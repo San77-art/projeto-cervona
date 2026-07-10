@@ -65,3 +65,7 @@ class XMLExtractor:
 
 # Singleton
 extractor = XMLExtractor()
+
+def get_extractor() -> XMLExtractor:
+    """Dependency injection for the shared extractor instance"""
+    return extractor

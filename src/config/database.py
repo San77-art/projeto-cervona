@@ -5,6 +5,7 @@ Database configuration and connection
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from src.config.settings import settings
+from src.models.base import Base
 import logging
 
 logger = logging.getLogger(__name__)
@@ -28,8 +29,7 @@ async def init_db():
     """Initialize database (create tables)"""
     try:
         async with engine.begin() as conn:
-            # TODO: Create tables
-            # await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(Base.metadata.create_all)
             logger.info("Database initialized")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")

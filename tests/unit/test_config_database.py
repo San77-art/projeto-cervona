@@ -19,7 +19,9 @@ def _async_context_manager(return_value=None, side_effect=None):
 
 @pytest.mark.asyncio
 async def test_init_db_success():
-    with patch.object(type(database.engine), "begin", return_value=_async_context_manager()):
+    conn = MagicMock()
+    conn.run_sync = AsyncMock(return_value=None)
+    with patch.object(type(database.engine), "begin", return_value=_async_context_manager(return_value=conn)):
         await database.init_db()  # should not raise
 
 
