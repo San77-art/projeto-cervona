@@ -80,6 +80,44 @@ def test_upload_xml_persists_extracted_items(client, mock_xml, stub_extractor):
     ]
 
 
+def test_upload_xml_prefers_parsed_ncm_cfop_cst_over_llm(client, mock_xml, stub_extractor):
+    # LLM misreads the fields; the deterministic XML parse should win
+    stub_extractor.result = {
+        "items": [
+            {
+                "ncm": "99999999",
+                "cfop": "9999",
+                "cst_icms": "99",
+                "quantity": 10.0,
+                "unit_value": 100.0,
+                "total_value": 1000.0,
+                "confidence": 0.4,
+                "validation_notes": "low confidence read",
+            }
+        ],
+        "overall_confidence": 0.4,
+        "warnings": [],
+    }
+
+    upload_response = client.post(
+        "/api/v1/xml/upload",
+        files={"file": ("nfe.xml", mock_xml.encode("utf-8"), "application/xml")},
+    )
+    xml_id = upload_response.json()["id"]
+
+    response = client.get(f"/api/v1/extracted/{xml_id}")
+    data = response.json()
+    assert data["items"] == [
+        {
+            "ncm": "12345678",
+            "cfop": "5102",
+            "cst": "99",
+            "quantity": 10.0,
+            "value": 1000.0,
+        }
+    ]
+
+
 def test_upload_xml_marks_failed_on_extraction_error(client, mock_xml, stub_extractor):
     stub_extractor.result = {"error": "Invalid response format", "items": []}
 
