@@ -144,3 +144,4 @@ data/production/
 # Docker
 .dockerignore
 docker-compose.override.yml
+.terraform/
