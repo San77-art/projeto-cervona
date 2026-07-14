@@ -73,3 +73,24 @@ variable "jwt_secret_key" {
   type        = string
   sensitive   = true
 }
+
+# ---------------------------------------------------------------------------
+# CI/CD (GitHub Actions -> ghcr.io -> EC2 via SSM)
+# ---------------------------------------------------------------------------
+
+variable "github_repository" {
+  description = "GitHub repo allowed to assume the deploy role, as \"owner/repo\" (OIDC trust condition). Deploy is restricted to the main branch."
+  type        = string
+}
+
+variable "ghcr_username" {
+  description = "GitHub username/org whose GHCR package the EC2 instance pulls images from (stored in Secrets Manager, used for `docker login ghcr.io`)"
+  type        = string
+  sensitive   = true
+}
+
+variable "ghcr_pat" {
+  description = "GitHub PAT with read:packages, used by the EC2 instance to pull the app image from ghcr.io (stored in Secrets Manager, not written to state-visible defaults)"
+  type        = string
+  sensitive   = true
+}

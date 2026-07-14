@@ -27,3 +27,13 @@ output "app_secrets_manager_arn" {
   description = "ARN of the Secrets Manager secret holding app secrets (Anthropic API key, JWT key)"
   value       = aws_secretsmanager_secret.app.arn
 }
+
+output "github_actions_deploy_role_arn" {
+  description = "IAM role ARN for GitHub Actions to assume via OIDC - set this as the AWS_DEPLOY_ROLE_ARN repository variable"
+  value       = aws_iam_role.github_actions_deploy.arn
+}
+
+output "ec2_name_tag" {
+  description = "Name tag GitHub Actions filters on to find the app instance for deploy (aws ec2 describe-instances)"
+  value       = "${local.name_prefix}-app"
+}

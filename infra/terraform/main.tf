@@ -10,6 +10,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
 }
 
@@ -224,6 +228,28 @@ resource "aws_secretsmanager_secret_version" "app" {
 }
 
 # ---------------------------------------------------------------------------
+# Secrets Manager - ghcr.io pull credentials
+#
+# Kept out of aws_secretsmanager_secret.app on purpose: that secret is dumped
+# wholesale into /etc/cernova-app.env, which is passed to the app container
+# via `docker run --env-file` — the pull PAT has no business being injected
+# into the app process. This one is only read by the deploy script.
+# ---------------------------------------------------------------------------
+
+resource "aws_secretsmanager_secret" "ghcr" {
+  name = "${local.name_prefix}/ghcr-credentials"
+  tags = local.tags
+}
+
+resource "aws_secretsmanager_secret_version" "ghcr" {
+  secret_id = aws_secretsmanager_secret.ghcr.id
+  secret_string = jsonencode({
+    ghcr_username = var.ghcr_username
+    ghcr_pat      = var.ghcr_pat
+  })
+}
+
+# ---------------------------------------------------------------------------
 # IAM role for the EC2 app server
 # ---------------------------------------------------------------------------
 
@@ -250,6 +276,7 @@ data "aws_iam_policy_document" "app" {
     resources = [
       aws_secretsmanager_secret.db.arn,
       aws_secretsmanager_secret.app.arn,
+      aws_secretsmanager_secret.ghcr.arn,
     ]
   }
 
@@ -274,9 +301,93 @@ resource "aws_iam_role_policy" "app" {
   policy = data.aws_iam_policy_document.app.json
 }
 
+# Lets the SSM Agent (pre-installed on the AL2023 AMI) register the instance
+# as a managed node, so GitHub Actions can run the deploy script via
+# ssm:SendCommand instead of opening SSH to the runners' IPs.
+resource "aws_iam_role_policy_attachment" "app_ssm" {
+  role       = aws_iam_role.app.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 resource "aws_iam_instance_profile" "app" {
   name = "${local.name_prefix}-app-profile"
   role = aws_iam_role.app.name
+}
+
+# ---------------------------------------------------------------------------
+# GitHub Actions OIDC -> IAM role, for deploying via SSM without static AWS keys
+# ---------------------------------------------------------------------------
+
+data "tls_certificate" "github" {
+  url = "https://token.actions.githubusercontent.com/.well-known/openid-configuration"
+}
+
+resource "aws_iam_openid_connect_provider" "github" {
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.github.certificates[0].sha1_fingerprint]
+  tags            = local.tags
+}
+
+data "aws_iam_policy_document" "github_actions_assume" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    # Restrict to pushes/merges on main - deploy should not run off any branch.
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:${var.github_repository}:ref:refs/heads/main"]
+    }
+  }
+}
+
+resource "aws_iam_role" "github_actions_deploy" {
+  name               = "${local.name_prefix}-gha-deploy"
+  assume_role_policy = data.aws_iam_policy_document.github_actions_assume.json
+  tags               = local.tags
+}
+
+data "aws_iam_policy_document" "github_actions_deploy" {
+  statement {
+    sid       = "DescribeInstances"
+    actions   = ["ec2:DescribeInstances"]
+    resources = ["*"] # DescribeInstances does not support resource-level restriction
+  }
+
+  statement {
+    sid       = "SendDeployCommand"
+    actions   = ["ssm:SendCommand"]
+    resources = [aws_instance.app.arn]
+  }
+
+  statement {
+    sid       = "SendCommandDocument"
+    actions   = ["ssm:SendCommand"]
+    resources = ["arn:aws:ssm:${var.aws_region}::document/AWS-RunShellScript"]
+  }
+
+  statement {
+    sid       = "ReadCommandResult"
+    actions   = ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations"]
+    resources = ["*"] # these calls take a command ID, not an instance/document ARN
+  }
+}
+
+resource "aws_iam_role_policy" "github_actions_deploy" {
+  name   = "${local.name_prefix}-gha-deploy-policy"
+  role   = aws_iam_role.github_actions_deploy.id
+  policy = data.aws_iam_policy_document.github_actions_deploy.json
 }
 
 # ---------------------------------------------------------------------------
@@ -312,12 +423,25 @@ resource "aws_instance" "app" {
     encrypted   = true
   }
 
+  # NOTE on indentation: the outer closing EOF and the inner closing SCRIPT
+  # must both sit at column 0 (verified against actual `terraform apply`
+  # output, not just docs) - Terraform's <<- heredoc strips leading
+  # whitespace equal to the CLOSING marker's own indentation from every
+  # line, uniformly. If EOF here were indented, that same amount would get
+  # stripped from "#!/bin/bash" too, leaving it non-flush-left - which
+  # cloud-init requires to recognize this as a shell script at all - and
+  # would similarly break plain bash's own exact-match rule for the inner
+  # SCRIPT terminator.
   user_data = <<-EOF
-    #!/bin/bash
+#!/bin/bash
+    set -euo pipefail
     dnf update -y
-    dnf install -y python3.11 python3.11-pip git jq
+    dnf install -y python3.11 python3.11-pip git jq docker
 
-    # Fetch app secrets from Secrets Manager and drop them into the app env file.
+    systemctl enable --now docker
+
+    # Fetch app secrets from Secrets Manager and drop them into the app env file
+    # (this becomes the --env-file for the app container - see deploy script below).
     aws secretsmanager get-secret-value \
       --region ${var.aws_region} \
       --secret-id ${aws_secretsmanager_secret.app.name} \
@@ -331,7 +455,58 @@ resource "aws_instance" "app" {
       '"DATABASE_URL=postgresql://\(.username):\(.password)@\(.host):\(.port)/\(.dbname)"' >> /etc/cernova-app.env
 
     chmod 600 /etc/cernova-app.env
-  EOF
+
+    # ghcr.io pull credentials, kept separate from /etc/cernova-app.env on
+    # purpose - only the deploy script's `docker login` needs these, the app
+    # container itself never should.
+    aws secretsmanager get-secret-value \
+      --region ${var.aws_region} \
+      --secret-id ${aws_secretsmanager_secret.ghcr.name} \
+      --query SecretString --output text | jq -r \
+      'to_entries[] | "\(.key | ascii_upcase)=\(.value)"' > /etc/cernova-ghcr.env
+
+    chmod 600 /etc/cernova-ghcr.env
+
+    # Deploy script - invoked by GitHub Actions over SSM Run Command
+    # (aws ssm send-command) on every push to main, passing the image ref as $1.
+    cat > /usr/local/bin/cernova-deploy.sh <<'SCRIPT'
+#!/bin/bash
+    set -euo pipefail
+    IMAGE="$${1:?usage: cernova-deploy.sh <image>}"
+
+    set -a
+    source /etc/cernova-ghcr.env
+    set +a
+
+    echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+    docker pull "$IMAGE"
+
+    docker stop cernova-api >/dev/null 2>&1 || true
+    docker rm cernova-api >/dev/null 2>&1 || true
+
+    docker run -d \
+      --name cernova-api \
+      --restart unless-stopped \
+      --env-file /etc/cernova-app.env \
+      -p 8000:8000 \
+      "$IMAGE"
+
+    for i in $(seq 1 10); do
+      if curl -sf http://localhost:8000/api/v1/health >/dev/null; then
+        echo "cernova-api is healthy"
+        docker image prune -af --filter "until=24h" >/dev/null 2>&1 || true
+        exit 0
+      fi
+      sleep 3
+    done
+
+    echo "cernova-api failed its health check after deploy" >&2
+    docker logs --tail 100 cernova-api >&2 || true
+    exit 1
+SCRIPT
+
+    chmod 755 /usr/local/bin/cernova-deploy.sh
+EOF
 
   tags = merge(local.tags, { Name = "${local.name_prefix}-app" })
 }

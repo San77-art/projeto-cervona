@@ -4,8 +4,20 @@ environment      = "production"
 allowed_ssh_cidr = "203.0.113.0/32" # replace with your IP/32
 key_name         = "my-ec2-keypair" # existing EC2 key pair name
 
+# "owner/repo" - the only GitHub repo allowed to assume the deploy role, and
+# only from its main branch (see the OIDC trust condition in main.tf).
+github_repository = "San77-art/projeto-cervona"
+
 # Sensitive - do not commit real values. Prefer passing these via
-# TF_VAR_anthropic_api_key / TF_VAR_jwt_secret_key environment variables
-# instead of putting them in a checked-in tfvars file.
+# TF_VAR_anthropic_api_key / TF_VAR_jwt_secret_key / TF_VAR_ghcr_username /
+# TF_VAR_ghcr_pat environment variables instead of putting them in a
+# checked-in tfvars file.
 anthropic_api_key = "sk-ant-..."
 jwt_secret_key    = "replace-with-a-long-random-string"
+
+# GitHub username/org that owns the ghcr.io package, and a PAT (classic,
+# read:packages scope) the EC2 instance uses to `docker login ghcr.io` and
+# pull the image CI pushes. Not the same as GITHUB_TOKEN - that one is
+# ephemeral per workflow run and can't be used by the instance later.
+ghcr_username = "San77-art"
+ghcr_pat      = "ghp_..."

@@ -66,14 +66,16 @@ terraform apply
 
 Outputs relevantes: `ec2_public_ip`, `ec2_instance_id`, `rds_endpoint`, `s3_bucket_name`, `secrets_manager_arn`, `app_secrets_manager_arn`.
 
-### 2.4 O que o `user_data` da EC2 faz — e o que NÃO faz
+### 2.4 O que o `user_data` da EC2 faz
 
-O script de bootstrap embutido em `aws_instance.app.user_data` (main.tf, linhas ~315-334):
+O script de bootstrap embutido em `aws_instance.app.user_data` (main.tf):
 
-1. Atualiza pacotes e instala `python3.11`, `git`, `jq`.
-2. Busca os dois secrets do Secrets Manager e monta `/etc/cernova-app.env` com as variáveis da app (incluindo `DATABASE_URL` já montada a partir das credenciais do RDS).
+1. Atualiza pacotes e instala `python3.11`, `git`, `jq`, `docker`; habilita e inicia o serviço `docker`.
+2. Busca `{prefix}/app-secrets` e `{prefix}/db-credentials` do Secrets Manager e monta `/etc/cernova-app.env` (inclui `DATABASE_URL` já montada a partir das credenciais do RDS) — este arquivo vira o `--env-file` do container da API.
+3. Busca `{prefix}/ghcr-credentials` e monta `/etc/cernova-ghcr.env`, separado do arquivo acima de propósito: só o script de deploy usa essas credenciais para `docker login`, a API não deveria ver o PAT do GHCR no seu próprio ambiente.
+4. Escreve `/usr/local/bin/cernova-deploy.sh` — o script que o pipeline de CI/CD invoca a cada deploy (ver 4.1): faz `docker login`, `docker pull` da imagem indicada, para/remove o container `cernova-api` anterior, sobe o novo com `--restart unless-stopped`, espera `GET /api/v1/health` responder, e faz `docker image prune` de imagens não usadas há mais de 24h.
 
-Ele **não** clona o repositório, não instala `requirements.txt`, não faz `docker build`/`docker run`, e não inicia a API como serviço (`systemd`, etc.). Depois de `terraform apply`, a instância está pronta com `/etc/cernova-app.env` populado, mas **o deploy da aplicação em si ainda é manual**: você precisa entrar na instância (SSH), trazer o código (git clone ou `scp` da imagem Docker), instalar dependências e subir a API — ou estender o `user_data`/adicionar um pipeline de CI/CD que faça isso. Trate isso como a próxima peça em aberto, não como algo já automatizado.
+A instância registra-se automaticamente no AWS Systems Manager (o agente SSM já vem pré-instalado nas AMIs Amazon Linux 2023; a permissão para isso é a managed policy `AmazonSSMManagedInstanceCore` anexada à role da EC2) — é assim que o GitHub Actions consegue rodar `cernova-deploy.sh` sem precisar de acesso SSH.
 
 ### 2.5 Destruir
 
@@ -89,13 +91,29 @@ Em `environment = "production"`, `deletion_protection` do RDS bloqueia a destrui
 
 ## 4. CI/CD
 
-`.github/workflows/ci.yml` existe e roda lint/type-check/testes no push — não há workflow de deploy (`deploy.yml` mencionado no README original não existe). Deploy para AWS é manual pelos passos acima até que isso mude.
+`.github/workflows/ci.yml` ("CI/CD Pipeline") tem três jobs:
+
+1. **`test`** — em todo push (`develop`/`staging`/`main`) e PR para `develop`: `flake8`, `black --check`, `mypy`, `pytest` com cobertura, contra um Postgres de serviço.
+2. **`docker-build-push`** — só em push para `main` e só se `test` passar. Builda a imagem (`Dockerfile` da raiz) e publica em `ghcr.io/<owner>/<repo>` com duas tags: o SHA do commit e `latest`. Autentica com o `GITHUB_TOKEN` embutido — nenhum segredo novo necessário para este job.
+3. **`deploy`** — assume uma role AWS via OIDC (sem chaves de longa duração salvas no GitHub), localiza a instância EC2 pela tag `Name` e dispara `/usr/local/bin/cernova-deploy.sh <imagem>` nela via `aws ssm send-command`, depois espera o resultado e falha o workflow se o comando não terminar com `Success`.
+
+### 4.1 Setup único antes do primeiro deploy automático
+
+1. Aplique o Terraform com as novas variáveis (`github_repository`, `ghcr_username`, `ghcr_pat` — ver `terraform.tfvars.example`). Isso cria, além do que já existia: o secret `{prefix}/ghcr-credentials`, a role `{prefix}-gha-deploy` (assumível só pelo branch `main` do repo indicado em `github_repository`, via OIDC), e anexa `AmazonSSMManagedInstanceCore` à role da EC2.
+2. No GitHub, em Settings → Secrets and variables → Actions → **Variables** (não Secrets — nenhum destes é sensível), crie:
+   - `AWS_DEPLOY_ROLE_ARN` = saída `github_actions_deploy_role_arn` do Terraform
+   - `AWS_REGION` = a mesma região do `aws_region` usado no apply
+   - `EC2_NAME_TAG` = saída `ec2_name_tag` do Terraform (por padrão `cernova-production-app`)
+3. Gere um GitHub PAT clássico com escopo `read:packages` (usado pela instância EC2 para `docker pull` de `ghcr.io`, não pelo GitHub Actions) e passe-o como `TF_VAR_ghcr_pat` ao aplicar o Terraform — não commite em `terraform.tfvars`.
+4. A partir daí, todo push em `main` que passar em `test` builda, publica e faz deploy automaticamente. Para forçar um redeploy sem mudar código, re-rode o job `deploy` do último workflow run pela UI do GitHub.
+
+Este pipeline ainda não foi executado contra a infraestrutura real (requer credenciais AWS e um repositório com Actions habilitado) — a lógica do `user_data`/deploy script foi validada renderizando o heredoc do Terraform e checando a sintaxe do bash resultante (`bash -n`), não rodando de ponta a ponta em uma EC2 de verdade. Valide o primeiro deploy observando os logs do job e `docker logs cernova-api` na instância.
 
 ## 5. Checklist antes de apontar produção para dados reais
 
 - [ ] `terraform.tfvars` **não** commitado (`git status` limpo)
-- [ ] `ANTHROPIC_API_KEY` e `jwt_secret_key` passados via `TF_VAR_*`, não hardcoded
+- [ ] `ANTHROPIC_API_KEY`, `jwt_secret_key` e `ghcr_pat` passados via `TF_VAR_*`, não hardcoded
 - [ ] `allowed_ssh_cidr` restrito ao seu IP, não `0.0.0.0/0`
-- [ ] Deploy da aplicação na EC2 automatizado ou documentado passo a passo pela pessoa que o fizer manualmente (ver 2.4)
+- [ ] Variáveis do GitHub Actions configuradas (`AWS_DEPLOY_ROLE_ARN`, `AWS_REGION`, `EC2_NAME_TAG` — ver 4.1) e um deploy de teste executado com sucesso
 - [ ] `environment = "production"` no `.tfvars` antes do apply final, para ativar `deletion_protection` do RDS
 - [ ] Rotina de backup/teste de restore do RDS validada (retention está em 7 dias por padrão)

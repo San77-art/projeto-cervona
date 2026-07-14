@@ -109,15 +109,15 @@ O que **não** existe apesar de aparecer em documentação antiga ou em `require
 - Login (`POST /auth/login`) contra um único usuário admin configurado via `.env` — ver `docs/06-api.md`.
 - Frontend funcional para upload e visualização, com modal de login: guarda o JWT em `localStorage`, envia `Authorization: Bearer` em toda chamada, e volta a pedir login se o token expirar ou for revogado (401).
 - Testes unitários com banco isolado, Claude mockado e fluxo de auth cobertos (não fazem chamadas reais).
-- Deploy em AWS via Terraform (EC2 + RDS + S3 + Secrets Manager) — provisionamento de infra funciona; deploy da aplicação na instância ainda é manual (ver `docs/05-deployment.md`, seção 2.4).
+- Deploy em AWS via Terraform (EC2 + RDS + S3 + Secrets Manager), com CI/CD completo: `.github/workflows/ci.yml` roda lint/testes, builda a imagem Docker, publica em ghcr.io e faz deploy na EC2 via SSM a cada push em `main` (ver `docs/05-deployment.md`, seções 2.4 e 4).
+- Cliente SEFAZ real (`src/sefaz/client.py`, Distribuição de DFe com mTLS + NSU) além do mock, com `POST /api/v1/sefaz/sync` para disparar a sincronização (real ou mock, conforme `SEFAZ_MODE`).
 
 ## O que ainda não existe
 
 - Múltiplos usuários / tabela de usuários, refresh token, logout no servidor (o botão "Sair" do frontend só limpa o token local) ou revogação — um único login admin, token válido até expirar.
-- Cliente SEFAZ real (só o mock).
 - Upload de XML bruto para storage externo (S3/Blob) — hoje o conteúdo é processado em memória e descartado.
 - Rate limiting, apesar da configuração existir.
-- CI/CD de deploy (`.github/workflows/ci.yml` roda lint/testes; não há workflow de deploy).
+- Sincronização automática/agendada com a SEFAZ — `/sefaz/sync` existe, mas só roda quando chamado (sem scheduler/cron).
 
 ---
 
