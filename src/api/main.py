@@ -12,6 +12,7 @@ from typing import Optional
 
 from src.config.settings import settings
 from src.config.logging import setup_logging
+from src.config.database import init_db
 from src.api.routes import health, xml_capture, extraction
 
 # ========================================
@@ -31,6 +32,14 @@ async def lifespan(app: FastAPI):
     Startup and shutdown events
     """
     logger.info(f"Starting {settings.API_TITLE} v{settings.API_VERSION}")
+    try:
+        await init_db()
+        # TODO: Validar conexão Key Vault
+        # TODO: Validar conexão Anthropic API
+        logger.info("✓ All startup checks passed")
+    except Exception as e:
+        logger.error(f"✗ Startup check failed: {e}")
+        raise
     yield
     logger.info("Shutting down...")
 
@@ -110,7 +119,7 @@ async def http_exception_handler(request, exc):
 async def startup_event():
     """Validar conexões e dependências"""
     try:
-        # TODO: Validar conexão PostgreSQL
+        await init_db()
         # TODO: Validar conexão Key Vault
         # TODO: Validar conexão Anthropic API
         logger.info("✓ All startup checks passed")

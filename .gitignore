@@ -145,3 +145,10 @@ data/production/
 .dockerignore
 docker-compose.override.yml
 .terraform/
+*.tfvars
+!terraform.tfvars.example
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.db

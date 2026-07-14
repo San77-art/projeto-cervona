@@ -10,9 +10,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def _async_database_url(url: str) -> str:
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if url.startswith("sqlite://"):
+        return url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    return url
+
 # Create engine
 engine = create_async_engine(
-    settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://"),
+    _async_database_url(settings.DATABASE_URL),
     echo=settings.DB_ECHO,
     future=True,
 )
