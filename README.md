@@ -59,17 +59,23 @@ projeto-cernova-completo/
 │   │   └── routes/
 │   │       ├── health.py         ← /health, /health/deep, /ready
 │   │       ├── xml_capture.py    ← upload + persistência
-│   │       └── extraction.py     ← leitura de itens extraídos + dashboard
+│   │       ├── extraction.py     ← leitura de itens extraídos + dashboard
+│   │       └── sefaz.py          ← POST /sefaz/sync (real ou mock, conforme SEFAZ_MODE)
 │   ├── agent/
 │   │   ├── extractor.py          ← XMLExtractor (Claude)
 │   │   └── prompts.py            ← prompts de extração
 │   ├── sefaz/
 │   │   ├── parser.py             ← parsing determinístico NCM/CFOP/CST (lxml)
+│   │   ├── client.py             ← SEFAZClient real (Distribuição de DFe, mTLS + NSU)
+│   │   ├── service.py            ← sync_documents(): escolhe real/mock e persiste
 │   │   └── mock.py               ← MockSEFAZClient para dev
+│   ├── services/
+│   │   └── xml_pipeline.py       ← parser + extração Claude, compartilhado entre upload e sync
 │   ├── models/
 │   │   ├── base.py               ← declarative base SQLAlchemy
 │   │   ├── xml_document.py       ← XMLDocument (+ enum XMLStatus)
-│   │   └── extracted_item.py     ← ExtractedItem
+│   │   ├── extracted_item.py     ← ExtractedItem
+│   │   └── sefaz_sync_state.py   ← cursor de NSU da última sincronização
 │   └── config/
 │       ├── settings.py           ← pydantic-settings
 │       ├── database.py           ← engine async + init_db()

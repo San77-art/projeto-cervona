@@ -32,7 +32,8 @@ Este documento descreve a arquitetura **real**. Onde o plano original diverge de
                                       ▼
 ┌───────────────────────────────────────────────────────────────┐
 │                         FastAPI (src/api)                       │
-│  main.py → routers: health / xml_capture / extraction           │
+│  main.py → routers: health / auth / xml_capture / extraction /  │
+│            sefaz                                                │
 └───────────┬───────────────────────────────┬─────────────────────┘
             │                               │
             ▼                               ▼
@@ -61,13 +62,14 @@ Este documento descreve a arquitetura **real**. Onde o plano original diverge de
 
 ### 2.1 API (`src/api/`)
 
-- **`main.py`** — cria a `FastAPI` app, registra CORS, monta os três routers sob o prefixo `/api/v1`, e roda `init_db()` (cria as tabelas via `Base.metadata.create_all`, não há migrations Alembic apesar de `alembic` estar em `requirements.txt`) no lifespan de startup.
+- **`main.py`** — cria a `FastAPI` app, registra CORS, monta os quatro routers sob o prefixo `/api/v1`, e roda `init_db()` (cria as tabelas via `Base.metadata.create_all`, não há migrations Alembic apesar de `alembic` estar em `requirements.txt`) no lifespan de startup.
 - **`routes/health.py`** — `/health`, `/health/deep` (checks ainda não implementados, retorna `"unknown"` para todas as dependências), `/ready`.
 - **`routes/xml_capture.py`** — upload de XML, persistência, orquestra parser determinístico + extractor Claude.
 - **`routes/extraction.py`** — leitura dos itens extraídos e resumo agregado (`/dashboard`).
+- **`routes/sefaz.py`** — `POST /sefaz/sync`, dispara uma sincronização com a SEFAZ (real ou mock, ver 2.4.1).
 - **`routes/auth.py`** — `POST /auth/login`, autentica contra o único usuário admin (`ADMIN_USERNAME`/`ADMIN_PASSWORD_HASH` em `settings.py`) e devolve um JWT.
 - **`middleware/auth.py`** — hash/verificação de senha (bcrypt puro, não `passlib` — ver nota abaixo), criação/validação de JWT (`python-jose`), e a dependency `get_current_user` usada para proteger rotas.
-- Todas as rotas de `xml_capture.py` e `extraction.py` exigem `Authorization: Bearer <token>` (aplicado via `APIRouter(dependencies=[Depends(get_current_user)])` em cada um dos dois routers). `health.py` e `auth.py` ficam públicos.
+- Todas as rotas de `xml_capture.py`, `extraction.py` e `sefaz.py` exigem `Authorization: Bearer <token>` (aplicado via `APIRouter(dependencies=[Depends(get_current_user)])` em cada um dos routers). `health.py` e `auth.py` ficam públicos.
 - Ainda sem audit trail nem rate limiting, apesar de `RATE_LIMIT_ENABLED` existir em `settings.py` — essa config não é consumida em nenhum lugar do código ainda. Também não há tabela de usuários, refresh token, logout/revogação de token, nem múltiplos papéis — é um único login compartilhado.
 
 > **Nota — passlib evitado de propósito:** a primeira versão desta feature usou `passlib[bcrypt]`, já presente em `requirements.txt`. `passlib` está sem release desde 2020 e sua rotina de autodetecção de backend quebra contra `bcrypt` >= 4.1 (`AttributeError` na leitura de versão, seguido de `ValueError: password cannot be longer than 72 bytes` no autoteste interno do passlib, não relacionado a nenhuma senha real). A correção foi trocar para a API do pacote `bcrypt` diretamente (`bcrypt.hashpw`/`bcrypt.checkpw`) e remover `passlib` de `requirements.txt`.
@@ -86,7 +88,20 @@ Este documento descreve a arquitetura **real**. Onde o plano original diverge de
 ### 2.4 SEFAZ (`src/sefaz/`)
 
 - **`mock.py`** — `MockSEFAZClient` simula respostas da SEFAZ (NFe mock, `query_xml`, `manifest`) para desenvolvimento sem certificado A1 nem acesso real à SEFAZ.
-- **Não existe `client.py`** (cliente real da SEFAZ com certificado A1, NSU, retentativas) nem `src/utils/keyvault.py`, `src/utils/storage.py`, `src/utils/retry.py`. `SEFAZ_MODE=real` não tem implementação por trás — apenas a variável existe em `settings.py`.
+- **`client.py`** — `SEFAZClient`, cliente real do web service de Distribuição de DF-e (Ambiente Nacional). Autentica via mTLS com certificado A1 (`.pfx`/`.p12`, carregado de `SEFAZ_CERTIFICATE_PATH`), monta o envelope SOAP `distDFeInt` (modo `distNSU`, paginação por cursor) e decodifica `docZip` (base64 + gzip) na resposta. Retentativas com backoff exponencial (`tenacity`) em erros 5xx/timeout; erros 4xx não são retentados. Ver o cabeçalho do arquivo para as ressalvas sobre URLs/versão de schema.
+- **`service.py`** — `sync_documents()` decide entre `SEFAZClient` (real) e `MockSEFAZClient` (mock) conforme `SEFAZ_MODE`, e persiste cada documento via `src/services/xml_pipeline.py`. No modo real, pagina por NSU até `caught_up` (ou um limite de páginas por chamada) e salva o cursor em `SefazSyncState` para retomar na próxima sincronização.
+- `src/utils/keyvault.py`, `src/utils/storage.py`, `src/utils/retry.py` mencionados no plano original continuam não implementados — a retentativa vive dentro de `client.py` via `tenacity`, não em um utilitário compartilhado.
+
+### 2.4.1 Sincronização com a SEFAZ
+
+`POST /api/v1/sefaz/sync` (protegido por `get_current_user`, ver `routes/sefaz.py`) dispara uma chamada a `sync_documents()`:
+
+1. **Modo mock** (`SEFAZ_MODE=mock`, padrão): busca os documentos fixos de `MockSEFAZClient.query_xml()` e persiste cada um.
+2. **Modo real** (`SEFAZ_MODE=real`): usa `SEFAZClient` para consultar a partir do NSU salvo em `SefazSyncState` (linha única, id `"default"`), ignora documentos que são apenas resumo (`resNFe`/`resEvento` — `SEFAZDocument.is_full_document` é `False`), e persiste os documentos completos (`procNFe`/`procNFCe`/`procEventoNFe`).
+3. Cada documento passa por `process_xml_document()` (`src/services/xml_pipeline.py`) — o mesmo parser determinístico + extração Claude usados no upload manual (`xml_capture.py`), agora compartilhado entre as duas rotas de entrada.
+4. `SEFAZClientError` vira HTTP 502; `SEFAZ_MODE` inválido vira HTTP 400.
+
+Este cliente real ainda não foi testado contra o ambiente de homologação/produção da SEFAZ (exige certificado A1 válido) — apenas contra respostas SOAP sintéticas (`tests/unit/test_sefaz_client.py`, `tests/unit/test_sefaz_service.py`). Valide em homologação antes de apontar `SEFAZ_MODE=real` para produção.
 
 ### 2.5 Modelos de dados (`src/models/`)
 
@@ -109,9 +124,14 @@ ExtractedItem
   cst: str(3)
   quantity: float
   value: float
+
+SefazSyncState
+  id: str(20)            # sempre "default" — linha única, sem multi-tenant
+  last_nsu: str(15)       # cursor de paginação da Distribuição de DFe
+  updated_at: datetime
 ```
 
-Não existem as tabelas `clients` ou `audit_logs` mencionadas no roadmap original — só estas duas.
+Não existem as tabelas `clients` ou `audit_logs` mencionadas no roadmap original.
 
 ### 2.6 Frontend (`frontend/index.html`)
 

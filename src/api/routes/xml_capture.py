@@ -10,8 +10,8 @@ import logging
 from src.agent.extractor import XMLExtractor, get_extractor
 from src.api.middleware.auth import get_current_user
 from src.config.database import get_db
-from src.models import ExtractedItem, XMLDocument, XMLStatus
-from src.sefaz.parser import parse_nfe_items
+from src.models import XMLDocument, XMLStatus
+from src.services.xml_pipeline import process_xml_document
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 logger = logging.getLogger(__name__)
@@ -43,35 +43,9 @@ async def upload_xml(
         await db.commit()
         await db.refresh(xml_document)
 
-        # Parse NCM/CFOP/CST deterministically from the XML first — these are
-        # structured fields Claude doesn't need to infer, and it's cheaper and
-        # more reliable than trusting the LLM to transcribe them correctly.
-        try:
-            parsed_items = parse_nfe_items(content_str)
-        except ValueError as e:
-            logger.warning(f"Deterministic NFe parsing failed for {file.filename}: {e}")
-            parsed_items = []
-
-        extraction_result = await extractor.extract(content_str)
-
-        if "error" in extraction_result:
-            xml_document.status = XMLStatus.FAILED
-            logger.warning(
-                f"Extraction failed for {file.filename}: {extraction_result['error']}"
-            )
-        else:
-            for index, item in enumerate(extraction_result.get("items", [])):
-                parsed = parsed_items[index] if index < len(parsed_items) else {}
-                db.add(ExtractedItem(
-                    xml_document_id=xml_document.id,
-                    ncm=parsed.get("ncm") or item.get("ncm"),
-                    cfop=parsed.get("cfop") or item.get("cfop"),
-                    cst=parsed.get("cst") or item.get("cst_icms"),
-                    quantity=item.get("quantity"),
-                    value=item.get("total_value"),
-                ))
-            xml_document.confidence_score = extraction_result.get("overall_confidence")
-            xml_document.status = XMLStatus.PROCESSED
+        # NCM/CFOP/CST are parsed deterministically from the XML inside
+        # process_xml_document — structured fields Claude doesn't need to infer.
+        await process_xml_document(db, xml_document, content_str, extractor)
 
         await db.commit()
         await db.refresh(xml_document)

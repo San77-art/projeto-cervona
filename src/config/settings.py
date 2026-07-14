@@ -37,10 +37,24 @@ class Settings(BaseSettings):
     SEFAZ_TIMEOUT: int = 30
     SEFAZ_RETRY_MAX: int = 3
     SEFAZ_RETRY_BACKOFF: int = 2
-    
+
+    # SEFAZ_USER/SEFAZ_PASSWORD are unused by src/sefaz/client.py — the real NFe
+    # Distribuição de DFe web service authenticates purely via mTLS with the A1
+    # certificate below, there is no username/password. Kept here in case a
+    # different SEFAZ service needs them later.
     SEFAZ_USER: Optional[str] = None
     SEFAZ_PASSWORD: Optional[str] = None
-    SEFAZ_CERTIFICATE_PATH: Optional[str] = None
+
+    SEFAZ_CERTIFICATE_PATH: Optional[str] = None  # .pfx/.p12 (A1) file path
+    SEFAZ_CERTIFICATE_PASSWORD: Optional[str] = None
+
+    SEFAZ_CNPJ: Optional[str] = None  # CNPJ (parte interessada) que consulta a distribuição
+    SEFAZ_UF_CODE: Optional[str] = None  # código IBGE da UF do autor, ex.: "35" (SP)
+    SEFAZ_ENVIRONMENT: str = "homologacao"  # homologacao ou producao (tpAmb 2/1)
+
+    # Sobrescreve a URL padrão do web service se necessário — ver o cabeçalho de
+    # src/sefaz/client.py antes de usar em produção.
+    SEFAZ_DISTDFE_URL: Optional[str] = None
     
     # ========================================
     # Claude / Anthropic
