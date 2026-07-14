@@ -44,6 +44,12 @@ Edite `.env`. Para desenvolvimento local, os únicos valores que normalmente pre
 
 Todas as variáveis `AZURE_*` e `ENTRA_*` existem em `settings.py` mas não são lidas por nenhum código ainda — pode deixá-las em branco.
 
+`ADMIN_PASSWORD_HASH` fica em branco no `.env.example` — sem ela, o login sempre falha com 401. Gere um hash bcrypt e cole em `.env`:
+
+```bash
+python -c "from src.api.middleware.auth import hash_password; print(hash_password('sua-senha'))"
+```
+
 ## 4. Subir o banco local
 
 ```bash
@@ -103,10 +109,16 @@ Ele assume a API em `http://localhost:8000/api/v1` por padrão — esse valor fi
 
 ## 7. Testar o fluxo de upload manualmente
 
+`/xml/*`, `/extracted/*` e `/dashboard` exigem um token (ver `docs/06-api.md`, seção "Autenticação"):
+
 ```bash
 curl http://localhost:8000/api/v1/health
 
-curl -X POST -F "file=@tests/data/sample-nfe.xml" \
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
+  -d "username=admin" -d "password=sua-senha" | python -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
+
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -F "file=@tests/data/sample-nfe.xml" \
   http://localhost:8000/api/v1/xml/upload
 ```
 
@@ -138,4 +150,6 @@ mypy src/                # type checking
 | `ModuleNotFoundError: No module named 'src'` | Rodando `uvicorn` de dentro de `src/` | Rode da raiz do projeto |
 | Upload retorna `status: failed` | `ANTHROPIC_API_KEY` ausente/inválida, ou `CLAUDE_MODEL` incorreto | Confirme `.env`, veja os logs da API |
 | `docker-compose up` falha na porta 5432 | Já existe um Postgres local rodando nessa porta | Pare o outro serviço ou mude a porta mapeada no `docker-compose.yml` e em `DATABASE_URL` |
+| `POST /auth/login` sempre retorna 401 | `ADMIN_PASSWORD_HASH` vazio/não configurado no `.env` | Gere o hash (passo 3) e reinicie a API |
+| Endpoints de `/xml`, `/extracted`, `/dashboard` retornam 401 | Faltou `Authorization: Bearer <token>` ou o token expirou (`JWT_EXPIRATION_HOURS`) | Faça login de novo em `/auth/login` |
 | Frontend mostra "Não foi possível conectar à API" | API não está rodando, ou CORS bloqueando | Confirme que a API está em `http://localhost:8000`; em `ENVIRONMENT=development` o CORS já libera `*` |

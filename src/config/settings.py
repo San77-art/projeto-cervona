@@ -90,6 +90,12 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = "your-secret-key-change-in-prod"
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRATION_HOURS: int = 24
+
+    # Single admin account (no user table yet — see docs/07-arquitetura.md).
+    # ADMIN_PASSWORD_HASH is a bcrypt hash, not a plaintext password:
+    #   python -c "from src.api.middleware.auth import hash_password; print(hash_password('your-password'))"
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_PASSWORD_HASH: Optional[str] = None
     
     # ========================================
     # CORS

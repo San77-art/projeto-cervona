@@ -65,7 +65,12 @@ Este documento descreve a arquitetura **real**. Onde o plano original diverge de
 - **`routes/health.py`** — `/health`, `/health/deep` (checks ainda não implementados, retorna `"unknown"` para todas as dependências), `/ready`.
 - **`routes/xml_capture.py`** — upload de XML, persistência, orquestra parser determinístico + extractor Claude.
 - **`routes/extraction.py`** — leitura dos itens extraídos e resumo agregado (`/dashboard`).
-- Não existe `src/api/middleware/` — sem autenticação, sem audit trail, sem rate limiting, apesar de `RATE_LIMIT_ENABLED` e `JWT_*` existirem em `settings.py`. Essas configs não são consumidas em nenhum lugar do código ainda.
+- **`routes/auth.py`** — `POST /auth/login`, autentica contra o único usuário admin (`ADMIN_USERNAME`/`ADMIN_PASSWORD_HASH` em `settings.py`) e devolve um JWT.
+- **`middleware/auth.py`** — hash/verificação de senha (bcrypt puro, não `passlib` — ver nota abaixo), criação/validação de JWT (`python-jose`), e a dependency `get_current_user` usada para proteger rotas.
+- Todas as rotas de `xml_capture.py` e `extraction.py` exigem `Authorization: Bearer <token>` (aplicado via `APIRouter(dependencies=[Depends(get_current_user)])` em cada um dos dois routers). `health.py` e `auth.py` ficam públicos.
+- Ainda sem audit trail nem rate limiting, apesar de `RATE_LIMIT_ENABLED` existir em `settings.py` — essa config não é consumida em nenhum lugar do código ainda. Também não há tabela de usuários, refresh token, logout/revogação de token, nem múltiplos papéis — é um único login compartilhado.
+
+> **Nota — passlib evitado de propósito:** a primeira versão desta feature usou `passlib[bcrypt]`, já presente em `requirements.txt`. `passlib` está sem release desde 2020 e sua rotina de autodetecção de backend quebra contra `bcrypt` >= 4.1 (`AttributeError` na leitura de versão, seguido de `ValueError: password cannot be longer than 72 bytes` no autoteste interno do passlib, não relacionado a nenhuma senha real). A correção foi trocar para a API do pacote `bcrypt` diretamente (`bcrypt.hashpw`/`bcrypt.checkpw`) e remover `passlib` de `requirements.txt`.
 
 ### 2.2 Extração determinística (`src/sefaz/parser.py`)
 
@@ -115,9 +120,11 @@ Um único arquivo HTML: React 18 + Babel standalone carregados via CDN (`unpkg.c
 - **Requer internet** para carregar os scripts do CDN, mesmo rodando localmente.
 - Aponta para a API via um campo configurável (padrão `http://localhost:8000/api/v1`), persistido em `localStorage`.
 - Dashboard com contagem por status, upload por drag-and-drop, tabela de XMLs enviados, drawer lateral com os itens extraídos de um XML selecionado.
-- Faz polling da API a cada 15s (`setInterval(refresh, 15000)`).
+- Faz polling da API a cada 15s (`setInterval(refresh, 15000)`), mas só enquanto houver um token — sem login, `refresh()` retorna cedo em vez de bater em endpoints protegidos.
+- **Login:** um modal (`LoginModal`) cobre a tela inteira sempre que não há token em `localStorage` (chave `cernova_token`). Ele faz `POST /auth/login` (form-urlencoded) direto contra `apiBase` e guarda o `access_token` retornado.
+- **Todas as chamadas passam por `fetchJson()`**, que anexa `Authorization: Bearer <token>` quando há token. Uma resposta `401` limpa o token do estado/`localStorage` e lança um erro marcado (`isAuthError`), o que faz o modal de login reaparecer automaticamente — não existe um endpoint de logout no backend; o botão "Sair" só descarta o token local.
 
-Não há autenticação, roteamento client-side, nem state management além de hooks do React puro.
+Não há roteamento client-side nem state management além de hooks do React puro.
 
 ### 2.7 Configuração (`src/config/`)
 

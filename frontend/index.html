@@ -204,6 +204,29 @@
   }
   .confidence-meter > div { height: 100%; background: var(--series-1); border-radius: 3px; }
 
+  .modal-scrim {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.35);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 60; padding: 20px;
+  }
+  .modal-card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px; width: 100%; max-width: 340px;
+    display: flex; flex-direction: column; gap: 14px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+  }
+  .modal-card h2 { margin: 0; font-size: 16px; }
+  .modal-sub { margin: -8px 0 0; font-size: 12.5px; color: var(--text-secondary); }
+  .field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-secondary); }
+  .field input {
+    font-family: inherit; font-size: 13.5px; padding: 8px 10px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--page-plane); color: var(--text-primary);
+  }
+  .field input:focus { outline: none; border-color: var(--series-1); }
+  .modal-card .btn.primary { width: 100%; padding: 9px 12px; font-size: 13px; }
+  .modal-card .btn.primary:disabled { opacity: 0.6; cursor: default; }
+
   footer.hint { margin-top: 8px; font-size: 11.5px; color: var(--text-muted); }
 </style>
 </head>
@@ -406,8 +429,76 @@ function ExtractedDrawer({ open, onClose, xmlDoc, data, loading, error }) {
   );
 }
 
+function LoginModal({ apiBase, onLogin }) {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      const form = new URLSearchParams();
+      form.set("username", username);
+      form.set("password", password);
+      const res = await fetch(`${apiBase}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: form.toString(),
+      });
+      if (!res.ok) {
+        let detail = "Usuário ou senha inválidos.";
+        try { const body = await res.json(); detail = body.error || body.detail || detail; } catch (e) {}
+        throw new Error(detail);
+      }
+      const data = await res.json();
+      onLogin(data.access_token);
+    } catch (err) {
+      setError(err.message || "Não foi possível entrar.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="modal-scrim">
+      <form className="modal-card" onSubmit={handleSubmit}>
+        <div>
+          <h2>Entrar</h2>
+          <p className="modal-sub">Autentique-se para enviar e visualizar XMLs.</p>
+        </div>
+        {error && <div className="banner error"><span className="dot err" />{error}</div>}
+        <label className="field">
+          <span>Usuário</span>
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoFocus
+            autoComplete="username"
+          />
+        </label>
+        <label className="field">
+          <span>Senha</span>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+          />
+        </label>
+        <button className="btn primary" type="submit" disabled={submitting || !username || !password}>
+          {submitting ? "Entrando…" : "Entrar"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function App() {
   const [apiBase, setApiBase] = useState(() => localStorage.getItem("cernova_api_base") || DEFAULT_API_BASE);
+  const [token, setToken] = useState(() => localStorage.getItem("cernova_token") || null);
   const [apiOk, setApiOk] = useState(null); // null=unknown, true/false
   const [dashboard, setDashboard] = useState(null);
   const [xmlList, setXmlList] = useState({ total: 0, items: [] });
@@ -423,17 +514,31 @@ function App() {
 
   useEffect(() => { localStorage.setItem("cernova_api_base", apiBase); }, [apiBase]);
 
+  useEffect(() => {
+    if (token) localStorage.setItem("cernova_token", token);
+    else localStorage.removeItem("cernova_token");
+  }, [token]);
+
   const fetchJson = useCallback(async (path, opts) => {
-    const res = await fetch(`${apiBase}${path}`, opts);
+    const headers = { ...((opts && opts.headers) || {}) };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`${apiBase}${path}`, { ...opts, headers });
+    if (res.status === 401) {
+      setToken(null);
+      const err = new Error("Sessão expirada. Faça login novamente.");
+      err.isAuthError = true;
+      throw err;
+    }
     if (!res.ok) {
       let detail = res.statusText;
       try { const body = await res.json(); detail = body.error || body.detail || detail; } catch (e) {}
       throw new Error(detail || `HTTP ${res.status}`);
     }
     return res.json();
-  }, [apiBase]);
+  }, [apiBase, token]);
 
   const refresh = useCallback(async () => {
+    if (!token) return;
     try {
       const [dash, list] = await Promise.all([
         fetchJson("/dashboard"),
@@ -446,9 +551,11 @@ function App() {
       setLastUpdated(new Date());
     } catch (e) {
       setApiOk(false);
-      setGlobalError(`Não foi possível conectar à API em ${apiBase}. Verifique se o backend está rodando (${e.message}).`);
+      if (!e.isAuthError) {
+        setGlobalError(`Não foi possível conectar à API em ${apiBase}. Verifique se o backend está rodando (${e.message}).`);
+      }
     }
-  }, [fetchJson, apiBase]);
+  }, [fetchJson, apiBase, token]);
 
   useEffect(() => {
     refresh();
@@ -516,8 +623,11 @@ function App() {
             spellCheck={false}
           />
           <button className="btn" onClick={refresh}>Atualizar</button>
+          {token && <button className="btn" onClick={() => setToken(null)}>Sair</button>}
         </div>
       </div>
+
+      {!token && <LoginModal apiBase={apiBase} onLogin={setToken} />}
 
       {globalError && (
         <div className="banner error"><span className="dot err" />{globalError}</div>

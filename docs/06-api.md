@@ -4,7 +4,7 @@
 **Base URL local:** `http://localhost:8000`
 **Swagger/OpenAPI interativo:** `http://localhost:8000/docs` (ReDoc em `/redoc`, spec crua em `/openapi.json`)
 
-Todos os endpoints de negócio ficam sob o prefixo `/api/v1`. Não há autenticação — qualquer cliente que alcance a API pode chamar qualquer endpoint. Não implemente isso como "porta de produção" sem antes resolver auth (ver `docs/07-arquitetura.md`, seção 2.1).
+Todos os endpoints de negócio ficam sob o prefixo `/api/v1`. Os endpoints de `/xml` e `/extracted`/`/dashboard` exigem um JWT (`Authorization: Bearer <token>`), obtido em `POST /api/v1/auth/login`. `/health*`, `/ready` e `/auth/login` não exigem token. Não há tabela de usuários — autenticação é contra um único usuário admin configurado via `.env` (ver seção "Autenticação" abaixo e `docs/07-arquitetura.md`).
 
 ---
 
@@ -58,12 +58,47 @@ Probe de prontidão estilo Kubernetes. Sempre `{"ready": true}` — não valida 
 
 ---
 
-## `POST /api/v1/xml/upload`
+## Autenticação
 
-Envia um XML de NFe para processamento. `multipart/form-data`, campo `file`.
+### `POST /api/v1/auth/login`
+
+Não exige token. Corpo `application/x-www-form-urlencoded` (padrão OAuth2 password flow — os mesmos campos que o botão "Authorize" do Swagger UI em `/docs` já usa), não JSON.
 
 ```bash
-curl -X POST -F "file=@nota.xml" http://localhost:8000/api/v1/xml/upload
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -d "username=admin" -d "password=sua-senha"
+```
+
+**Resposta 200:**
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer"
+}
+```
+
+**401** se o usuário/senha não baterem com `ADMIN_USERNAME`/`ADMIN_PASSWORD_HASH`, ou se `ADMIN_PASSWORD_HASH` não estiver configurado no `.env` (login sempre falha nesse caso — não há fallback).
+
+O token expira em `JWT_EXPIRATION_HOURS` horas (padrão 24). Não há endpoint de refresh — depois de expirar, faça login de novo.
+
+Use o token nas chamadas protegidas:
+
+```bash
+curl -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs..." http://localhost:8000/api/v1/xml
+```
+
+No Swagger UI (`/docs`), clique em **Authorize** e informe usuário/senha — ele chama `/auth/login` e injeta o token automaticamente nas chamadas seguintes.
+
+---
+
+## `POST /api/v1/xml/upload` 🔒
+
+Requer `Authorization: Bearer <token>`. Envia um XML de NFe para processamento. `multipart/form-data`, campo `file`.
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -F "file=@nota.xml" http://localhost:8000/api/v1/xml/upload
 ```
 
 O que acontece internamente (detalhado em `docs/07-arquitetura.md`, seção 3):
@@ -90,7 +125,7 @@ O que acontece internamente (detalhado em `docs/07-arquitetura.md`, seção 3):
 - `400` — arquivo não termina em `.xml`.
 - `500` — exceção não tratada durante upload/parsing/persistência (detalhe da exceção vai no corpo, o que é aceitável em dev mas vale revisar antes de expor em produção — pode vazar detalhes internos).
 
-## `GET /api/v1/xml/{xml_id}`
+## `GET /api/v1/xml/{xml_id}` 🔒
 
 Metadados de um XML enviado.
 
@@ -105,7 +140,7 @@ Metadados de um XML enviado.
 
 `404` se `xml_id` não existir.
 
-## `GET /api/v1/xml?skip=0&limit=10`
+## `GET /api/v1/xml?skip=0&limit=10` 🔒
 
 Lista paginada dos XMLs enviados, mais recentes primeiro. `skip`/`limit` são inteiros opcionais (padrão `skip=0`, `limit=10`).
 
@@ -125,7 +160,7 @@ Lista paginada dos XMLs enviados, mais recentes primeiro. `skip`/`limit` são in
 
 ---
 
-## `GET /api/v1/extracted/{xml_id}`
+## `GET /api/v1/extracted/{xml_id}` 🔒
 
 Itens extraídos (NCM/CFOP/CST/quantidade/valor) de um XML específico, mais a confiança geral atribuída pelo Claude.
 
@@ -147,7 +182,7 @@ Itens extraídos (NCM/CFOP/CST/quantidade/valor) de um XML específico, mais a c
 
 `404` se `xml_id` não existir.
 
-## `GET /api/v1/dashboard`
+## `GET /api/v1/dashboard` 🔒
 
 Resumo agregado de todos os XMLs processados até agora — usado pelo frontend para os cartões de estatística.
 
@@ -178,7 +213,8 @@ Qualquer `HTTPException` levantada é serializada pelo handler global (`src/api/
 
 ## O que não existe ainda (não assuma que está implementado)
 
-- Autenticação/autorização (JWT, Entra ID) — nenhum endpoint exige token.
+- Múltiplos usuários / tabela de usuários — um único login admin via `.env`, sem registro, sem troca de senha, sem Entra ID.
+- Refresh token / logout / revogação — o JWT é válido até expirar (`JWT_EXPIRATION_HOURS`); não há como invalidar um token antes disso.
 - Rate limiting — `RATE_LIMIT_ENABLED` existe em `settings.py` mas não é lido em lugar nenhum.
 - Endpoints de admin (`src/api/routes/admin.py` do plano original não existe).
 - Upload para armazenamento externo (S3/Blob) — o conteúdo do XML é lido em memória e descartado após o parsing; não fica persistido em disco nem em object storage.

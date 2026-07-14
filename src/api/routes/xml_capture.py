@@ -8,11 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
 from src.agent.extractor import XMLExtractor, get_extractor
+from src.api.middleware.auth import get_current_user
 from src.config.database import get_db
 from src.models import ExtractedItem, XMLDocument, XMLStatus
 from src.sefaz.parser import parse_nfe_items
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 logger = logging.getLogger(__name__)
 
 @router.post("/xml/upload")

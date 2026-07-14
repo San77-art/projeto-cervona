@@ -99,14 +99,15 @@ O que **não** existe apesar de aparecer em documentação antiga ou em `require
 ## O que já funciona
 
 - Upload de XML → parsing determinístico (NCM/CFOP/CST) + extração via Claude (quantidade/valores/confiança) → persistência em Postgres.
-- Endpoints de consulta (`GET /xml`, `GET /xml/{id}`, `GET /extracted/{id}`, `GET /dashboard`).
-- Frontend funcional para upload e visualização.
-- Testes unitários com banco isolado e Claude mockado (não fazem chamadas reais).
+- Endpoints de consulta (`GET /xml`, `GET /xml/{id}`, `GET /extracted/{id}`, `GET /dashboard`), protegidos por JWT.
+- Login (`POST /auth/login`) contra um único usuário admin configurado via `.env` — ver `docs/06-api.md`.
+- Frontend funcional para upload e visualização, com modal de login: guarda o JWT em `localStorage`, envia `Authorization: Bearer` em toda chamada, e volta a pedir login se o token expirar ou for revogado (401).
+- Testes unitários com banco isolado, Claude mockado e fluxo de auth cobertos (não fazem chamadas reais).
 - Deploy em AWS via Terraform (EC2 + RDS + S3 + Secrets Manager) — provisionamento de infra funciona; deploy da aplicação na instância ainda é manual (ver `docs/05-deployment.md`, seção 2.4).
 
 ## O que ainda não existe
 
-- Autenticação/autorização em qualquer endpoint.
+- Múltiplos usuários / tabela de usuários, refresh token, logout no servidor (o botão "Sair" do frontend só limpa o token local) ou revogação — um único login admin, token válido até expirar.
 - Cliente SEFAZ real (só o mock).
 - Upload de XML bruto para storage externo (S3/Blob) — hoje o conteúdo é processado em memória e descartado.
 - Rate limiting, apesar da configuração existir.

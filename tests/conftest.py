@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.agent.extractor import get_extractor
 from src.api.main import app
+from src.api.middleware.auth import get_current_user
 from src.config.database import get_db
 from src.models import Base
 
@@ -52,7 +53,29 @@ def stub_extractor():
 
 @pytest.fixture
 def client(session_factory, stub_extractor):
-    """FastAPI test client wired to the isolated test database and stub extractor"""
+    """
+    FastAPI test client wired to the isolated test database and stub extractor.
+    Authentication is bypassed here so existing tests can focus on business logic;
+    see tests/unit/test_api_auth.py for auth-specific behavior (login, 401s).
+    """
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_extractor] = lambda: stub_extractor
+    app.dependency_overrides[get_current_user] = lambda: "test-user"
+    yield TestClient(app)
+    app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(get_extractor, None)
+    app.dependency_overrides.pop(get_current_user, None)
+
+@pytest.fixture
+def unauthenticated_client(session_factory, stub_extractor):
+    """
+    FastAPI test client with the same DB/extractor doubles as `client`, but without
+    bypassing authentication — for exercising the real login flow and 401 behavior.
+    """
     async def override_get_db():
         async with session_factory() as session:
             yield session

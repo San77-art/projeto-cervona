@@ -7,10 +7,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
+from src.api.middleware.auth import get_current_user
 from src.config.database import get_db
 from src.models import ExtractedItem, XMLDocument, XMLStatus
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 logger = logging.getLogger(__name__)
 
 @router.get("/extracted/{xml_id}")

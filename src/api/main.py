@@ -13,7 +13,7 @@ from typing import Optional
 from src.config.settings import settings
 from src.config.logging import setup_logging
 from src.config.database import init_db
-from src.api.routes import health, xml_capture, extraction
+from src.api.routes import auth, health, xml_capture, extraction
 
 # ========================================
 # Setup
@@ -79,6 +79,7 @@ app.add_middleware(
 # ========================================
 
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
+app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
 app.include_router(xml_capture.router, prefix="/api/v1", tags=["xml"])
 app.include_router(extraction.router, prefix="/api/v1", tags=["extraction"])
 
